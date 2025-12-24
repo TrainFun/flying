@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aes-gcm = "0.10.3"
+clap = { version = "4.5.53", features = ["derive"] }
 hostname = "0.4.2"
 mdns-sd = "0.17.1"
 petname = "2.0.2"

@@ -3,128 +3,220 @@ mod receive;
 mod send;
 mod utils;
 
-use std::{env, net::SocketAddr, path::PathBuf};
+use clap::{Parser, Subcommand};
+use std::{net::SocketAddr, path::PathBuf};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
-const VERSION: u64 = 2;
+const VERSION: u64 = 3;
+
+#[derive(Parser, Debug)]
+#[command(name = "flying")]
+#[command(about = "Simple encrypted file transfer tool with automatic peer discovery", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Send {
+        file: PathBuf,
+        #[arg(short, long, conflicts_with = "connect")]
+        listen: bool,
+        #[arg(short, long, value_name = "IP")]
+        connect: Option<String>,
+        password: Option<String>,
+    },
+    Receive {
+        #[arg(short, long, conflicts_with = "connect")]
+        listen: bool,
+        #[arg(short, long, value_name = "IP")]
+        connect: Option<String>,
+        password: Option<String>,
+        #[arg(short, long, default_value = ".")]
+        output: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum ConnectionMode {
+    AutoDiscover,
+    Listen,
+    Connect(String),
+}
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    if args.len() < 2 {
-        print_usage();
-        return;
-    }
-
-    let mode = &args[1];
-
-    match mode.as_str() {
-        "send" => {
-            if args.len() < 3 {
-                println!("Usage: flying send <file>");
-                return;
-            }
-            let file_path = PathBuf::from(&args[2]);
-
-            if !file_path.exists() {
-                println!("Error: File does not exist: {:?}", file_path);
-                return;
+    match cli.command {
+        Commands::Send {
+            file,
+            listen,
+            connect,
+            password,
+        } => {
+            if !file.exists() {
+                eprintln!("Error: File does not exist: {:?}", file);
+                std::process::exit(1);
             }
 
-            let password = utils::generate_password();
+            let connection_mode = if let Some(ip) = connect {
+                ConnectionMode::Connect(ip)
+            } else if listen {
+                ConnectionMode::Listen
+            } else {
+                ConnectionMode::AutoDiscover
+            };
+
+            let password = match &connection_mode {
+                ConnectionMode::Listen => password.unwrap_or_else(|| utils::generate_password()),
+                ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => password
+                    .unwrap_or_else(|| {
+                        println!("Please enter password:");
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input).unwrap();
+                        input.trim().to_string()
+                    }),
+            };
 
             println!("===========================================");
             println!("Flying - File Transfer Tool");
             println!("===========================================");
             println!("Mode: SEND");
             println!("Password: {}", password);
+            match &connection_mode {
+                ConnectionMode::AutoDiscover => {
+                    println!("Connection: Auto-discovering peers on local network")
+                }
+                ConnectionMode::Listen => {
+                    println!("Connection: Listening for incoming connections")
+                }
+                ConnectionMode::Connect(ip) => println!("Connection: Will connect to {}", ip),
+            }
             println!("===========================================\n");
 
-            if let Err(e) = run_sender(&file_path, &password).await {
+            if let Err(e) = run_sender(&file, &password, connection_mode).await {
                 eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
         }
-        "receive" => {
-            // Parse options
-            let mut i = 2;
-            let mut sender_ip: Option<String> = None;
-            let mut output_dir = env::current_dir().unwrap();
-            let mut password: Option<String> = None;
-
-            while i < args.len() {
-                match args[i].as_str() {
-                    "-o" => {
-                        if i + 1 < args.len() {
-                            output_dir = PathBuf::from(&args[i + 1]);
-                            i += 2;
-                        } else {
-                            println!("Error: -o requires an argument");
-                            return;
-                        }
-                    }
-                    arg => {
-                        if password.is_none() {
-                            password = Some(arg.to_string());
-                            i += 1;
-                        } else if sender_ip.is_none() {
-                            sender_ip = Some(arg.to_string());
-                            i += 1;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                }
+        Commands::Receive {
+            listen,
+            connect,
+            password,
+            output,
+        } => {
+            if !output.exists() {
+                eprintln!("Error: Output directory does not exist: {:?}", output);
+                std::process::exit(1);
             }
 
-            let password = match password {
-                Some(p) => p,
-                None => {
-                    println!("Please enter password:");
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input).unwrap();
-                    input.trim().to_string()
-                }
+            let connection_mode = if let Some(ip) = connect {
+                ConnectionMode::Connect(ip)
+            } else if listen {
+                ConnectionMode::Listen
+            } else {
+                ConnectionMode::AutoDiscover
             };
 
-            if !output_dir.exists() {
-                println!("Error: Output directory does not exist: {:?}", output_dir);
-                return;
-            }
+            let password = match &connection_mode {
+                ConnectionMode::Listen => password.unwrap_or_else(|| utils::generate_password()),
+                ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => password
+                    .unwrap_or_else(|| {
+                        println!("Please enter password:");
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input).unwrap();
+                        input.trim().to_string()
+                    }),
+            };
 
             println!("===========================================");
             println!("Flying - File Transfer Tool");
             println!("===========================================");
             println!("Mode: RECEIVE");
             println!("Password: {}", password);
-            println!("Output directory: {:?}", output_dir);
+            println!("Output directory: {:?}", output);
+            match &connection_mode {
+                ConnectionMode::AutoDiscover => {
+                    println!("Connection: Auto-discovering peers on local network")
+                }
+                ConnectionMode::Listen => {
+                    println!("Connection: Listening for incoming connections")
+                }
+                ConnectionMode::Connect(ip) => println!("Connection: Will connect to {}", ip),
+            }
             println!("===========================================\n");
 
-            if let Err(e) = run_receiver(&output_dir, &password, sender_ip).await {
+            if let Err(e) = run_receiver(&output, &password, connection_mode).await {
                 eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
         }
-        _ => print_usage(),
     }
 }
 
-async fn run_sender(file_path: &PathBuf, password: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn establish_connection(
+    mode: &ConnectionMode,
+    port: u16,
+) -> Result<TcpStream, Box<dyn std::error::Error>> {
+    match mode {
+        ConnectionMode::AutoDiscover => {
+            println!("Searching for peers on the local network...\n");
+
+            let services = mdns::discover_services(5)?;
+
+            if let Some(service) = mdns::select_service(&services) {
+                let addr = format!("{}:{}", service.ip, service.port).parse::<SocketAddr>()?;
+                println!("\nConnecting to {}...", addr);
+                let stream = TcpStream::connect(addr).await?;
+                println!("Connected!\n");
+                Ok(stream)
+            } else {
+                // No peers found, fall back to listen mode
+                println!("\nNo peers found. Falling back to listen mode...");
+                let addr = format!("0.0.0.0:{}", port).parse::<SocketAddr>()?;
+                let _mdns = mdns::advertise_service(port)?;
+                let listener = TcpListener::bind(&addr).await?;
+                println!("Listening on {}...", addr);
+                println!("Waiting for peer to connect...\n");
+                let (stream, socket_addr) = listener.accept().await?;
+                println!("Connection accepted from {}\n", socket_addr);
+                Ok(stream)
+            }
+        }
+        ConnectionMode::Listen => {
+            let addr = format!("0.0.0.0:{}", port).parse::<SocketAddr>()?;
+            let _mdns = mdns::advertise_service(port)?;
+            let listener = TcpListener::bind(&addr).await?;
+            println!("Listening on {}...", addr);
+            println!("Waiting for peer to connect...\n");
+            let (stream, socket_addr) = listener.accept().await?;
+            println!("Connection accepted from {}\n", socket_addr);
+            Ok(stream)
+        }
+        ConnectionMode::Connect(ip) => {
+            let addr = format!("{}:{}", ip, port).parse::<SocketAddr>()?;
+            println!("Connecting to {}...", addr);
+            let stream = TcpStream::connect(addr).await?;
+            println!("Connected!\n");
+            Ok(stream)
+        }
+    }
+}
+
+async fn run_sender(
+    file_path: &PathBuf,
+    password: &str,
+    connection_mode: ConnectionMode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
-    let addr = "0.0.0.0:3290".parse::<SocketAddr>()?;
-
-    // Start mDNS service advertisement
-    let _mdns = mdns::advertise_service(3290)?;
-
-    let listener = TcpListener::bind(&addr).await?;
-    println!("Listening on {}...", addr);
-    println!("Waiting for receiver to connect...\n");
-
-    let (mut stream, socket_addr) = listener.accept().await?;
-    println!("Connection accepted from {}\n", socket_addr);
+    // Establish connection based on mode
+    let mut stream = establish_connection(&connection_mode, 3290).await?;
 
     // Version exchange
     let peer_version = stream.read_u64().await?;
@@ -163,25 +255,12 @@ async fn run_sender(file_path: &PathBuf, password: &str) -> Result<(), Box<dyn s
 async fn run_receiver(
     output_dir: &PathBuf,
     password: &str,
-    sender_ip: Option<String>,
+    connection_mode: ConnectionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
-    // Discover sender using mDNS or use provided IP
-    let sender_addr = if let Some(ip) = sender_ip {
-        format!("{}:3290", ip).parse::<SocketAddr>()?
-    } else {
-        let services = mdns::discover_services(5)?; // Scan for 5 seconds
-        if let Some(selected_service) = mdns::select_service(&services) {
-            format!("{}:3290", selected_service.ip).parse::<SocketAddr>()?
-        } else {
-            return Err("No sender found".into());
-        }
-    };
-
-    println!("Connecting to sender at {}...", sender_addr);
-    let mut stream = TcpStream::connect(sender_addr).await?;
-    println!("Connected!\n");
+    // Establish connection based on mode
+    let mut stream = establish_connection(&connection_mode, 3290).await?;
 
     // Version exchange
     stream.write_u64(VERSION).await?;
@@ -221,35 +300,4 @@ async fn run_receiver(
 
     stream.shutdown().await?;
     Ok(())
-}
-
-fn print_usage() {
-    println!("Flying - Simple File Transfer Tool\n");
-    println!("Usage:");
-    println!("  Send a file:");
-    println!("    flying send <file>");
-    println!("    Example: flying send document.pdf\n");
-    println!("  Receive a file:");
-    println!("    flying receive [password] [sender_ip] [-o output_directory]");
-    println!("    Example: flying receive blue-bird-secret");
-    println!("    Example: flying receive blue-bird-secret 192.168.1.100");
-    println!("    Example: flying receive blue-bird-secret -o /tmp/downloads");
-    println!("    Example: flying receive blue-bird-secret 192.168.1.100 -o /tmp/downloads\n");
-    println!("Send Mode Usage:");
-    println!("  Starts a TCP server and broadcasts mDNS service:");
-    println!("    flying send <file>");
-    println!("    - Waits for receiver to connect");
-    println!("    - Password is auto-generated using petname\n");
-    println!("Receive Mode Usage:");
-    println!("  Connects to sender using mDNS discovery or direct IP:");
-    println!("    flying receive [password] [sender_ip] [-o output_directory]");
-    println!("    - If sender_ip is not provided, mDNS auto-discovery will be used");
-    println!("    - If password is not provided, you'll be prompted");
-    println!("    - Use -o to specify output directory (default is current directory)\n");
-    println!("Note:");
-    println!("  - Send mode generates passwords using petname (e.g. blue-bird-secret)");
-    println!("  - Receiver connects to sender using mDNS discovery or direct IP");
-    println!("  - Default output directory is current directory");
-    println!("  - Uses TCP port 3290");
-    println!("  - Files are encrypted with AES-256-GCM");
 }
