@@ -40,7 +40,7 @@ pub async fn send_file(
     }
 
     let mut buffer = vec![0u8; CHUNKSIZE];
-    let mut last_percent: u8 = 0;
+    let mut progress = utils::ProgressTracker::new();
 
     while bytes_left > 0 {
         tokio::task::yield_now().await;
@@ -49,14 +49,7 @@ pub async fn send_file(
             Ok(bytes_read) => {
                 bytes_left -= bytes_read as u64;
                 encrypt_and_send_chunk(&buffer[..bytes_read], &cipher, stream).await?;
-
-                let percent_done = ((size - bytes_left) as f64 / size as f64 * 100.0) as u8;
-                if percent_done > last_percent {
-                    print!("\rProgress: {}%", percent_done);
-                    use std::io::Write;
-                    std::io::stdout().flush()?;
-                    last_percent = percent_done;
-                }
+                progress.update(size - bytes_left, size)?;
             }
             Err(e) => return Err(Box::new(e)),
         }
@@ -65,7 +58,7 @@ pub async fn send_file(
     // Send chunk size of 0 to signal end
     stream.write_u64(0).await?;
 
-    println!("\rProgress: 100%");
+    progress.finish()?;
     let elapsed = (Instant::now() - start).as_secs_f64();
     println!("Sending took {}", utils::format_time(elapsed));
 

@@ -44,7 +44,7 @@ pub fn discover_services(
 
     let receiver = mdns.browse(SERVICE_TYPE)?;
 
-    println!("Scanning for receivers on the network...");
+    println!("Scanning for peers on the network...");
 
     let mut services = Vec::new();
     let start_time = std::time::Instant::now();
@@ -61,23 +61,27 @@ pub fn discover_services(
                     for scoped_ip in info.get_addresses() {
                         let ip_addr = match scoped_ip {
                             mdns_sd::ScopedIp::V4(scoped_v4) => IpAddr::V4(*scoped_v4.addr()),
-                            mdns_sd::ScopedIp::V6(scoped_v6) => IpAddr::V6(*scoped_v6.addr()),
+                            mdns_sd::ScopedIp::V6(scoped_v6) => {
+                                let addr = *scoped_v6.addr();
+                                // Skip link-local IPv6 addresses without proper scope
+                                if addr.is_loopback() || addr.is_unspecified() {
+                                    continue;
+                                }
+                                IpAddr::V6(addr)
+                            }
                             _ => continue, // Skip any other address types
                         };
 
-                        if ip_addr.is_ipv4() {
-                            // Check if we already have this service
-                            let already_exists = services.iter().any(|s: &DiscoveredService| {
-                                s.ip == ip_addr && s.port == info.get_port()
+                        // Check if we already have this service
+                        let already_exists = services.iter().any(|s: &DiscoveredService| {
+                            s.ip == ip_addr && s.port == info.get_port()
+                        });
+                        if !already_exists {
+                            services.push(DiscoveredService {
+                                hostname: info.get_hostname().to_string(),
+                                ip: ip_addr,
+                                port: info.get_port(),
                             });
-                            if !already_exists {
-                                services.push(DiscoveredService {
-                                    hostname: info.get_hostname().to_string(),
-                                    ip: ip_addr,
-                                    port: info.get_port(),
-                                });
-                            }
-                            break; // Only take the first IPv4 address
                         }
                     }
                 }
@@ -94,12 +98,12 @@ pub fn discover_services(
 
 pub fn select_service(services: &[DiscoveredService]) -> Option<&DiscoveredService> {
     if services.is_empty() {
-        println!("\nNo receivers found on the network.");
-        println!("Make sure the receiver is running and on the same network.");
+        println!("\nNo peers found on the network.");
+        println!("Make sure the peer is running and on the same network.");
         return None;
     }
 
-    println!("\nFound {} receiver(s):", services.len());
+    println!("\nFound {} peer(s):", services.len());
     for (i, service) in services.iter().enumerate() {
         println!(
             "  [{}] {} ({}:{})",
@@ -115,7 +119,7 @@ pub fn select_service(services: &[DiscoveredService]) -> Option<&DiscoveredServi
         return Some(&services[0]);
     }
 
-    println!("\nSelect a receiver (1-{}):", services.len());
+    println!("\nSelect a peer (1-{}):", services.len());
 
     let mut input = String::new();
     std::io::stdin().read_line(&mut input).ok()?;

@@ -30,6 +30,7 @@ enum Commands {
         connect: Option<String>,
         password: Option<String>,
     },
+
     Receive {
         #[arg(short, long, conflicts_with = "connect")]
         listen: bool,
@@ -48,6 +49,56 @@ enum ConnectionMode {
     Connect(String),
 }
 
+fn determine_connection_mode(listen: bool, connect: Option<String>) -> ConnectionMode {
+    if let Some(ip) = connect {
+        ConnectionMode::Connect(ip)
+    } else if listen {
+        ConnectionMode::Listen
+    } else {
+        ConnectionMode::AutoDiscover
+    }
+}
+
+fn get_or_prompt_password(connection_mode: &ConnectionMode, password: Option<String>) -> String {
+    match connection_mode {
+        ConnectionMode::Listen => utils::generate_password(),
+        ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => {
+            password.unwrap_or_else(|| {
+                println!("Please enter password:");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                input.trim().to_string()
+            })
+        }
+    }
+}
+
+fn print_session_info(
+    mode: &str,
+    password: &str,
+    connection_mode: &ConnectionMode,
+    output_dir: Option<&PathBuf>,
+) {
+    println!("===========================================");
+    println!("Flying - File Transfer Tool");
+    println!("===========================================");
+    println!("Mode: {}", mode);
+    println!("Password: {}", password);
+    if let Some(dir) = output_dir {
+        println!("Output directory: {:?}", dir);
+    }
+    match connection_mode {
+        ConnectionMode::AutoDiscover => {
+            println!("Connection: Auto-discovering peers on local network")
+        }
+        ConnectionMode::Listen => {
+            println!("Connection: Listening for incoming connections")
+        }
+        ConnectionMode::Connect(ip) => println!("Connection: Will connect to {}", ip),
+    }
+    println!("===========================================\n");
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -64,46 +115,16 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            let connection_mode = if let Some(ip) = connect {
-                ConnectionMode::Connect(ip)
-            } else if listen {
-                ConnectionMode::Listen
-            } else {
-                ConnectionMode::AutoDiscover
-            };
-
-            let password = match &connection_mode {
-                ConnectionMode::Listen => password.unwrap_or_else(|| utils::generate_password()),
-                ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => password
-                    .unwrap_or_else(|| {
-                        println!("Please enter password:");
-                        let mut input = String::new();
-                        std::io::stdin().read_line(&mut input).unwrap();
-                        input.trim().to_string()
-                    }),
-            };
-
-            println!("===========================================");
-            println!("Flying - File Transfer Tool");
-            println!("===========================================");
-            println!("Mode: SEND");
-            println!("Password: {}", password);
-            match &connection_mode {
-                ConnectionMode::AutoDiscover => {
-                    println!("Connection: Auto-discovering peers on local network")
-                }
-                ConnectionMode::Listen => {
-                    println!("Connection: Listening for incoming connections")
-                }
-                ConnectionMode::Connect(ip) => println!("Connection: Will connect to {}", ip),
-            }
-            println!("===========================================\n");
+            let connection_mode = determine_connection_mode(listen, connect);
+            let password = get_or_prompt_password(&connection_mode, password);
+            print_session_info("SEND", &password, &connection_mode, None);
 
             if let Err(e) = run_sender(&file, &password, connection_mode).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
+
         Commands::Receive {
             listen,
             connect,
@@ -115,41 +136,9 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            let connection_mode = if let Some(ip) = connect {
-                ConnectionMode::Connect(ip)
-            } else if listen {
-                ConnectionMode::Listen
-            } else {
-                ConnectionMode::AutoDiscover
-            };
-
-            let password = match &connection_mode {
-                ConnectionMode::Listen => password.unwrap_or_else(|| utils::generate_password()),
-                ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => password
-                    .unwrap_or_else(|| {
-                        println!("Please enter password:");
-                        let mut input = String::new();
-                        std::io::stdin().read_line(&mut input).unwrap();
-                        input.trim().to_string()
-                    }),
-            };
-
-            println!("===========================================");
-            println!("Flying - File Transfer Tool");
-            println!("===========================================");
-            println!("Mode: RECEIVE");
-            println!("Password: {}", password);
-            println!("Output directory: {:?}", output);
-            match &connection_mode {
-                ConnectionMode::AutoDiscover => {
-                    println!("Connection: Auto-discovering peers on local network")
-                }
-                ConnectionMode::Listen => {
-                    println!("Connection: Listening for incoming connections")
-                }
-                ConnectionMode::Connect(ip) => println!("Connection: Will connect to {}", ip),
-            }
-            println!("===========================================\n");
+            let connection_mode = determine_connection_mode(listen, connect);
+            let password = get_or_prompt_password(&connection_mode, password);
+            print_session_info("RECEIVE", &password, &connection_mode, Some(&output));
 
             if let Err(e) = run_receiver(&output, &password, connection_mode).await {
                 eprintln!("Error: {}", e);
@@ -157,6 +146,30 @@ async fn main() {
             }
         }
     }
+}
+
+async fn version_handshake(
+    stream: &mut TcpStream,
+    send_first: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (local_version, peer_version) = if send_first {
+        stream.write_u64(VERSION).await?;
+        let peer = stream.read_u64().await?;
+        (VERSION, peer)
+    } else {
+        let peer = stream.read_u64().await?;
+        stream.write_u64(VERSION).await?;
+        (VERSION, peer)
+    };
+
+    if peer_version != local_version {
+        println!(
+            "Warning: Version mismatch (local: {}, peer: {})",
+            local_version, peer_version
+        );
+    }
+
+    Ok(())
 }
 
 async fn establish_connection(
@@ -170,36 +183,29 @@ async fn establish_connection(
             let services = mdns::discover_services(5)?;
 
             if let Some(service) = mdns::select_service(&services) {
-                let addr = format!("{}:{}", service.ip, service.port).parse::<SocketAddr>()?;
+                let addr = SocketAddr::new(service.ip, service.port);
                 println!("\nConnecting to {}...", addr);
                 let stream = TcpStream::connect(addr).await?;
                 println!("Connected!\n");
                 Ok(stream)
             } else {
-                // No peers found, fall back to listen mode
-                println!("\nNo peers found. Falling back to listen mode...");
-                let addr = format!("0.0.0.0:{}", port).parse::<SocketAddr>()?;
-                let _mdns = mdns::advertise_service(port)?;
-                let listener = TcpListener::bind(&addr).await?;
-                println!("Listening on {}...", addr);
-                println!("Waiting for peer to connect...\n");
-                let (stream, socket_addr) = listener.accept().await?;
-                println!("Connection accepted from {}\n", socket_addr);
-                Ok(stream)
+                Err("No peers found on the local network".into())
             }
         }
         ConnectionMode::Listen => {
-            let addr = format!("0.0.0.0:{}", port).parse::<SocketAddr>()?;
+            // Use [::] for IPv6 dual-stack (accepts both IPv4 and IPv6)
+            let addr = format!("[::]:{}", port).parse::<SocketAddr>()?;
             let _mdns = mdns::advertise_service(port)?;
             let listener = TcpListener::bind(&addr).await?;
-            println!("Listening on {}...", addr);
+            println!("Listening on {} (IPv4/IPv6 dual-stack)...", addr);
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
             Ok(stream)
         }
         ConnectionMode::Connect(ip) => {
-            let addr = format!("{}:{}", ip, port).parse::<SocketAddr>()?;
+            let ip: std::net::IpAddr = ip.parse()?;
+            let addr = std::net::SocketAddr::new(ip, port);
             println!("Connecting to {}...", addr);
             let stream = TcpStream::connect(addr).await?;
             println!("Connected!\n");
@@ -215,19 +221,9 @@ async fn run_sender(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
-    // Establish connection based on mode
     let mut stream = establish_connection(&connection_mode, 3290).await?;
 
-    // Version exchange
-    let peer_version = stream.read_u64().await?;
-    stream.write_u64(VERSION).await?;
-
-    if peer_version != VERSION {
-        println!(
-            "Warning: Version mismatch (local: {}, peer: {})",
-            VERSION, peer_version
-        );
-    }
+    version_handshake(&mut stream, false).await?;
 
     // Mode confirmation (1 = send, 0 = receive)
     let peer_mode = stream.read_u64().await?;
@@ -259,22 +255,12 @@ async fn run_receiver(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
-    // Establish connection based on mode
     let mut stream = establish_connection(&connection_mode, 3290).await?;
 
-    // Version exchange
-    stream.write_u64(VERSION).await?;
-    let peer_version = stream.read_u64().await?;
-
-    if peer_version != VERSION {
-        println!(
-            "Warning: Version mismatch (local: {}, peer: {})",
-            VERSION, peer_version
-        );
-    }
+    version_handshake(&mut stream, true).await?;
 
     // Mode confirmation (1 = send, 0 = receive)
-    stream.write_u64(0).await?; // We are receiver
+    stream.write_u64(0).await?;
     let mode_ok = stream.read_u64().await?;
     if mode_ok != 1 {
         return Err("Both ends selected the same mode".into());

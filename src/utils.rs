@@ -1,5 +1,9 @@
 use sha2::{Digest, Sha256};
-use std::{fs, io, path::Path};
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+};
 
 pub fn get_key_from_password(password: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -49,4 +53,29 @@ pub fn make_parent_directories(full_path: &Path) -> io::Result<()> {
         fs::create_dir_all(dirs)?;
     }
     Ok(())
+}
+
+pub struct ProgressTracker {
+    last_percent: u8,
+}
+
+impl ProgressTracker {
+    pub fn new() -> Self {
+        Self { last_percent: 0 }
+    }
+
+    pub fn update(&mut self, bytes_processed: u64, total_bytes: u64) -> io::Result<()> {
+        let percent_done = ((bytes_processed as f64 / total_bytes as f64) * 100.0) as u8;
+        if percent_done > self.last_percent {
+            print!("\rProgress: {}%", percent_done);
+            io::stdout().flush()?;
+            self.last_percent = percent_done;
+        }
+        Ok(())
+    }
+
+    pub fn finish(&self) -> io::Result<()> {
+        println!("\rProgress: 100%");
+        Ok(())
+    }
 }

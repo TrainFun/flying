@@ -56,7 +56,7 @@ pub async fn receive_file(
     // Open output file
     let mut out_file = fs::File::create(&full_path)?;
 
-    let mut last_percent: u8 = 0;
+    let mut progress = utils::ProgressTracker::new();
 
     // Receive file
     loop {
@@ -67,20 +67,13 @@ pub async fn receive_file(
         }
         bytes_left -= decrypted_bytes.len() as u64;
         out_file.write_all(&decrypted_bytes)?;
-
-        let percent_done = ((file_size - bytes_left) as f64 / file_size as f64 * 100.0) as u8;
-        if percent_done > last_percent {
-            print!("\rProgress: {}%", percent_done);
-            use std::io::Write as _;
-            std::io::stdout().flush()?;
-            last_percent = percent_done;
-        }
+        progress.update(file_size - bytes_left, file_size)?;
     }
 
     // Tell sending end we're finished
     stream.write_u64(1).await?;
 
-    println!("\rProgress: 100%");
+    progress.finish()?;
     let elapsed = (Instant::now() - start).as_secs_f64();
     println!("Receiving took {}", utils::format_time(elapsed));
 
