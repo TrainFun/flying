@@ -4,6 +4,7 @@ mod send;
 mod utils;
 
 use clap::{Parser, Subcommand};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::{net::SocketAddr, path::PathBuf};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -193,10 +194,22 @@ async fn establish_connection(
             }
         }
         ConnectionMode::Listen => {
-            // Use [::] for IPv6 dual-stack (accepts both IPv4 and IPv6)
+            // Create IPv6 socket with dual-stack support (works on Windows too)
             let addr = format!("[::]:{}", port).parse::<SocketAddr>()?;
+
+            let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+            socket.set_only_v6(false)?;
+            socket.set_reuse_address(true)?;
+            socket.bind(&addr.into())?;
+            socket.listen(128)?;
+
+            // Convert socket2::Socket to std::net::TcpListener, then to tokio::net::TcpListener
+            let std_listener: std::net::TcpListener = socket.into();
+            std_listener.set_nonblocking(true)?;
+            let listener = TcpListener::from_std(std_listener)?;
+
             let _mdns = mdns::advertise_service(port)?;
-            let listener = TcpListener::bind(&addr).await?;
+
             println!("Listening on {} (IPv4/IPv6 dual-stack)...", addr);
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
