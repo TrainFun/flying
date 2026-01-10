@@ -1,93 +1,89 @@
 # Flying
 
-A simple, secure, and fast file transfer tool with automatic peer discovery via mDNS.
+Fast, secure, encrypted file transfer tool with automatic peer discovery.
 
 ## Features
 
-- **Encrypted transfers**: All files are encrypted using AES-256-GCM encryption
-- **Automatic peer discovery**: Uses mDNS to automatically discover peers on the local network
-- **Manual connection options**: Connect directly via IP address or listen for incoming connections
-- **Resume capability**: Detects duplicate files via SHA-256 hashing to avoid redundant transfers
-- **Progress tracking**: Real-time progress indicators with transfer speed statistics
-- **Cross-platform**: Works on Linux, macOS, and Windows
-  
+- 🔒 AES-256-GCM encryption - All transfers are encrypted
+- 📁 Folder support - Send entire directories with -r flag
+- 🚀 Streaming transfer - Optimized for speed, especially with multiple small files
+- 🔍 Auto-discovery - Finds peers automatically via mDNS
+- ♻️ Smart duplicate detection - Skips identical files (single file transfers only)
+- 📊 Real-time progress - Shows transfer speed and progress
+
 ## Installation
-
-### Prerequisites
-
-- Rust toolchain (1.70 or newer recommended)
-  
-### Build from source
-```
+```bash
 cargo build --release
 ```
 
-The binary will be available at `target/release/flying`
+Binary: target/release/flying
 
-## Usage
+## Quick Start
 
-Flying has two modes: **send** and **receive**.
+*One side must use -l to listen first*
 
-### Sending a file
+### Computer A: Start listening (generates password)
+`flying send -l myfile.pdf`
+
+### Computer B: Connect with password
+`flying receive the-generated-password`
+
+# Usage
+
+## Send Files
 ```
-flying send <FILE> [OPTIONS] [PASSWORD]
-```
+# Listen mode (generates password)
+flying send -l <file>
 
-#### Options:
-- `-l, --listen`: Listen for incoming connections (generates a random password)
-- `-c, --connect <IP>`: Connect directly to a specific IP address
-- No flags: Auto-discover peers on the local network
-  
-#### Examples:
+# Connect to IP
+flying send -c <IP> <file> <password>
 
-Auto-discover receiver:
-```
-flying send document.pdf my-secret-password
-```
-
-Listen mode (generates password):
-```
-flying send document.pdf --listen
+# Send folder
+flying send -lr <folder>
 ```
 
-Connect to specific IP:
+## Receive Files
 ```
-flying send document.pdf --connect 192.168.1.100 my-secret-password
+# Auto-discover sender
+flying receive <password>
+
+# Listen mode
+flying receive -l <password>
+
+# Connect to IP
+flying receive -c <IP> <password>
+
+# Custom output directory
+flying receive -o ~/Downloads <password>
 ```
 
-### Receiving a file
-```
-flying receive [OPTIONS] [PASSWORD]
-```
+## Options
 
-#### Options:
-- `-l, --listen`: Listen for incoming connections
-- `-c, --connect <IP>`: Connect directly to a specific IP address
-- `-o, --output <DIR>`: Output directory (default: current directory)
-- No flags: Auto-discover peers on the local network
-  
-#### Examples:
+### Send
+- -r, --recursive - Send folders
+- -l, --listen - Listen for connections (generates password)
+- -c, --connect <IP> - Connect to specific IP
+___
+### Receive
+- -l, --listen - Listen for connections
+- -c, --connect <IP> - Connect to specific IP
+- -o, --output <DIR> - Output directory (default: current directory)
+___
+## Examples
+```
+# Transfer a file (A listens, B connects)
+A: flying send -l document.pdf
+B: flying receive the-password-from-A
 
-Auto-discover sender:
-```
-flying receive my-secret-password
-```
+# Transfer a folder
+A: flying send -lr my-project
+B: flying receive -o ~/Projects the-password
 
-Listen mode:
-```
-flying receive --listen my-secret-password
-```
-
-Connect to specific IP:
-```
-flying receive --connect 192.168.1.100 my-secret-password
-```
-
-Specify output directory:
-```
-flying receive --output ~/Downloads my-secret-password
+# Direct IP connection
+A: flying send -l video.mp4
+B: flying receive -c 192.168.1.100 the-password
 ```
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues or pull requests.
+Contributions welcome! Submit issues or pull requests.

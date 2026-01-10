@@ -11,7 +11,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-const VERSION: u64 = 3;
+const VERSION: u64 = 4;
 
 #[derive(Parser, Debug)]
 #[command(name = "flying")]
@@ -29,6 +29,8 @@ enum Commands {
         listen: bool,
         #[arg(short, long, value_name = "IP")]
         connect: Option<String>,
+        #[arg(short = 'r', long)]
+        recursive: bool,
         password: Option<String>,
     },
 
@@ -109,10 +111,16 @@ async fn main() {
             file,
             listen,
             connect,
+            recursive,
             password,
         } => {
             if !file.exists() {
-                eprintln!("Error: File does not exist: {:?}", file);
+                eprintln!("Error: File/directory does not exist: {:?}", file);
+                std::process::exit(1);
+            }
+
+            if file.is_dir() && !recursive {
+                eprintln!("Error: Cannot send directory without -r/--recursive flag");
                 std::process::exit(1);
             }
 
@@ -120,7 +128,7 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
-            if let Err(e) = run_sender(&file, &password, connection_mode).await {
+            if let Err(e) = run_sender(&file, &password, connection_mode, recursive).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -231,6 +239,7 @@ async fn run_sender(
     file_path: &PathBuf,
     password: &str,
     connection_mode: ConnectionMode,
+    _recursive: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
@@ -247,11 +256,55 @@ async fn run_sender(
         stream.write_u64(1).await?;
     }
 
-    // Send number of files (always 1 in this simple version)
-    stream.write_u64(1).await?;
+    // Collect files to send
+    let files = if file_path.is_dir() {
+        utils::collect_files_recursive(file_path)?
+    } else {
+        vec![file_path.clone()]
+    };
 
-    // Send the file
-    send::send_file(file_path, &key, &mut stream).await?;
+    if files.is_empty() {
+        return Err("No files to send".into());
+    }
+
+    // Send number of files
+    stream.write_u64(files.len() as u64).await?;
+
+    // Send folder info: 1 if sending a folder, 0 if single file
+    let is_folder = file_path.is_dir();
+    stream.write_u64(if is_folder { 1 } else { 0 }).await?;
+
+    // If sending a folder, send the folder name
+    if is_folder {
+        let folder_name = file_path
+            .file_name()
+            .ok_or("Invalid folder name")?
+            .to_string_lossy()
+            .to_string();
+        stream.write_u64(folder_name.len() as u64).await?;
+        stream.write_all(folder_name.as_bytes()).await?;
+    }
+
+    // Send the base path for relative path calculation
+    let base_path = if file_path.is_dir() {
+        file_path.clone()
+    } else {
+        file_path
+            .parent()
+            .unwrap_or(std::path::Path::new(""))
+            .to_path_buf()
+    };
+
+    // Send each file sequentially (but with optimized protocol)
+    // For single file transfer, check for duplicates; for multiple files, stream without checking
+    let check_duplicate = files.len() == 1;
+
+    for (i, file) in files.iter().enumerate() {
+        println!("\n===========================================");
+        println!("File {} of {}", i + 1, files.len());
+        println!("===========================================");
+        send::send_file(file, &base_path, &key, &mut stream, check_duplicate).await?;
+    }
 
     println!("\n===========================================");
     println!("Transfer complete!");
@@ -283,13 +336,39 @@ async fn run_receiver(
     let num_files = stream.read_u64().await?;
     println!("Receiving {} file(s)...\n", num_files);
 
+    // Receive folder info: 1 if sending a folder, 0 if single file
+    let is_folder = stream.read_u64().await? == 1;
+
+    // If receiving a folder, get the folder name and create it
+    let final_output_dir = if is_folder {
+        let folder_name_len = stream.read_u64().await? as usize;
+        let mut folder_name_bytes = vec![0; folder_name_len];
+        stream.read_exact(&mut folder_name_bytes).await?;
+        let folder_name = String::from_utf8_lossy(&folder_name_bytes).to_string();
+
+        let mut folder_path = output_dir.clone();
+        folder_path.push(&folder_name);
+        println!("Creating folder: {}\n", folder_name);
+
+        // Create the folder if it doesn't exist
+        if !folder_path.exists() {
+            std::fs::create_dir_all(&folder_path)?;
+        }
+
+        folder_path
+    } else {
+        output_dir.clone()
+    };
+
     // Receive files
+    // For single file transfer, check for duplicates; for multiple files, stream without checking
+    let check_duplicate = num_files == 1;
+
     for i in 0..num_files {
         println!("===========================================");
         println!("File {} of {}", i + 1, num_files);
         println!("===========================================");
-        let last_file = i == num_files - 1;
-        receive::receive_file(output_dir, &key, &mut stream, last_file).await?;
+        receive::receive_file(&final_output_dir, &key, &mut stream, check_duplicate).await?;
         println!();
     }
 

@@ -4,19 +4,18 @@ use std::{
     fs,
     io::Write,
     path::Path,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncReadExt,
     net::TcpStream,
-    time::{sleep, timeout},
 };
 
 pub async fn receive_file(
     folder: &Path,
     key: &[u8],
     stream: &mut TcpStream,
-    last_file: bool,
+    check_duplicate: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cipher = Aes256Gcm::new_from_slice(key)?;
     let start = Instant::now();
@@ -29,15 +28,16 @@ pub async fn receive_file(
     println!("Receiving: {}", filename);
     println!("File size: {}", utils::make_size_readable(file_size));
 
-    let mut bytes_left = file_size;
-
-    // Check if we already have this file
     let mut full_path = folder.to_path_buf();
     full_path.push(&filename);
-    let need_transfer = check_for_file(&full_path, file_size, stream).await?;
-    if !need_transfer {
-        println!("Already have this file, skipping.");
-        return Ok(());
+
+    // For single file, check if we already have it
+    if check_duplicate {
+        let need_transfer = check_for_file(&full_path, file_size, stream).await?;
+        if !need_transfer {
+            println!("Already have this file, skipping.");
+            return Ok(());
+        }
     }
 
     // Create parent directories if necessary
@@ -56,24 +56,9 @@ pub async fn receive_file(
     // Open output file
     let mut out_file = fs::File::create(&full_path)?;
 
-    let mut progress = utils::ProgressTracker::new();
+    // Stream receive: start receiving immediately without waiting
+    receive_file_streaming(&cipher, stream, &mut out_file, file_size).await?;
 
-    // Receive file
-    loop {
-        tokio::task::yield_now().await;
-        let decrypted_bytes = receive_and_decrypt_chunk(&cipher, stream).await?;
-        if decrypted_bytes.is_empty() {
-            break;
-        }
-        bytes_left -= decrypted_bytes.len() as u64;
-        out_file.write_all(&decrypted_bytes)?;
-        progress.update(file_size - bytes_left, file_size)?;
-    }
-
-    // Tell sending end we're finished
-    stream.write_u64(1).await?;
-
-    progress.finish()?;
     let elapsed = (Instant::now() - start).as_secs_f64();
     println!("Receiving took {}", utils::format_time(elapsed));
 
@@ -81,42 +66,44 @@ pub async fn receive_file(
     let mbps = megabits / elapsed;
     println!("Speed: {:.2}mbps", mbps);
 
-    // Wait for double confirmation
-    if last_file {
-        match timeout(Duration::from_secs(2), stream.read_u64()).await {
-            Ok(res) => {
-                res?;
-            }
-            Err(_) => {
-                println!("Didn't receive confirmation");
-            }
-        };
-    } else {
-        stream.read_u64().await?;
-    }
-
     Ok(())
 }
 
-async fn receive_and_decrypt_chunk(
+async fn receive_file_streaming(
     cipher: &Aes256Gcm,
     stream: &mut TcpStream,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let chunk_size = stream.read_u64().await? as usize;
-    if chunk_size == 0 {
-        Ok(vec![])
-    } else {
+    out_file: &mut fs::File,
+    file_size: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut progress = utils::ProgressTracker::new();
+    let mut bytes_received = 0u64;
+
+    // Stream receive and decrypt chunks continuously
+    loop {
+        let chunk_size = stream.read_u64().await? as usize;
+        if chunk_size == 0 {
+            break;
+        }
+
         let mut chunk = vec![0u8; chunk_size];
         stream.read_exact(&mut chunk).await?;
 
+        // Decrypt
         let nonce = &chunk[..12];
         let ciphertext = &chunk[12..];
         let nonce = aes_gcm::Nonce::from_slice(nonce);
         let decrypted_chunk = cipher
             .decrypt(nonce, ciphertext)
             .map_err(|e| format!("Decryption error: {:?}", e))?;
-        Ok(decrypted_chunk)
+
+        bytes_received += decrypted_chunk.len() as u64;
+        out_file.write_all(&decrypted_chunk)?;
+        progress.update(bytes_received, file_size)?;
     }
+
+    progress.finish()?;
+
+    Ok(())
 }
 
 async fn receive_file_details(
@@ -135,6 +122,8 @@ async fn check_for_file(
     size: u64,
     stream: &mut TcpStream,
 ) -> Result<bool, Box<dyn std::error::Error>> {
+    use tokio::io::AsyncWriteExt;
+
     if filename.is_file() {
         let metadata = fs::metadata(filename)?;
         let local_size = metadata.len();
@@ -148,12 +137,10 @@ async fn check_for_file(
             Ok(!hashes_match)
         } else {
             stream.write_u64(0).await?;
-            sleep(Duration::from_secs(1)).await;
             Ok(true)
         }
     } else {
         stream.write_u64(0).await?;
-        sleep(Duration::from_secs(1)).await;
         Ok(true)
     }
 }

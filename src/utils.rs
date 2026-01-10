@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 pub fn get_key_from_password(password: &str) -> [u8; 32] {
@@ -78,4 +78,28 @@ impl ProgressTracker {
         println!("\rProgress: 100%");
         Ok(())
     }
+}
+
+pub fn collect_files_recursive(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_files_recursive_helper(dir, &mut files)?;
+    Ok(files)
+}
+
+fn collect_files_recursive_helper(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    if dir.is_file() {
+        files.push(dir.to_path_buf());
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_recursive_helper(&path, files)?;
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
