@@ -31,6 +31,8 @@ enum Commands {
         connect: Option<String>,
         #[arg(short = 'r', long)]
         recursive: bool,
+        #[arg(short = 'P', long)]
+        persistent: bool,
         password: Option<String>,
     },
 
@@ -112,6 +114,7 @@ async fn main() {
             listen,
             connect,
             recursive,
+            persistent,
             password,
         } => {
             if !file.exists() {
@@ -124,11 +127,18 @@ async fn main() {
                 std::process::exit(1);
             }
 
+            if persistent && !listen {
+                eprintln!("Error: --persistent flag requires --listen mode");
+                std::process::exit(1);
+            }
+
             let connection_mode = determine_connection_mode(listen, connect);
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
-            if let Err(e) = run_sender(&file, &password, connection_mode, recursive).await {
+            if let Err(e) =
+                run_sender(&file, &password, connection_mode, recursive, persistent).await
+            {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -240,23 +250,11 @@ async fn run_sender(
     password: &str,
     connection_mode: ConnectionMode,
     _recursive: bool,
+    persistent: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
-    let mut stream = establish_connection(&connection_mode, 3290).await?;
-
-    version_handshake(&mut stream, false).await?;
-
-    // Mode confirmation (1 = send, 0 = receive)
-    let peer_mode = stream.read_u64().await?;
-    if peer_mode == 1 {
-        stream.write_u64(0).await?;
-        return Err("Both ends selected send mode".into());
-    } else {
-        stream.write_u64(1).await?;
-    }
-
-    // Collect files to send
+    // Collect files to send (only once, outside the loop)
     let files = if file_path.is_dir() {
         utils::collect_files_recursive(file_path)?
     } else {
@@ -267,11 +265,120 @@ async fn run_sender(
         return Err("No files to send".into());
     }
 
+    let base_path = if file_path.is_dir() {
+        file_path.clone()
+    } else {
+        file_path
+            .parent()
+            .unwrap_or(std::path::Path::new(""))
+            .to_path_buf()
+    };
+
+    let is_folder = file_path.is_dir();
+
+    // If persistent mode, we need to keep a listener alive
+    let listener = if persistent && matches!(connection_mode, ConnectionMode::Listen) {
+        // Create IPv6 socket with dual-stack support
+        let addr = format!("[::]:{}", 3290).parse::<SocketAddr>()?;
+
+        let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_only_v6(false)?;
+        socket.set_reuse_address(true)?;
+        socket.bind(&addr.into())?;
+        socket.listen(128)?;
+
+        let std_listener: std::net::TcpListener = socket.into();
+        std_listener.set_nonblocking(true)?;
+        Some(TcpListener::from_std(std_listener)?)
+    } else {
+        None
+    };
+
+    let _mdns = if listener.is_some() {
+        Some(mdns::advertise_service(3290)?)
+    } else {
+        None
+    };
+
+    let mut transfer_count = 0u32;
+
+    loop {
+        transfer_count += 1;
+
+        if persistent {
+            println!("\n===========================================");
+            println!("Transfer #{}", transfer_count);
+            println!("===========================================");
+        }
+
+        let mut stream = if let Some(ref listener) = listener {
+            println!(
+                "Listening on {} (IPv4/IPv6 dual-stack)...",
+                format!("[::]:{}", 3290)
+            );
+            println!("Waiting for peer to connect...\n");
+            let (stream, socket_addr) = listener.accept().await?;
+            println!("Connection accepted from {}\n", socket_addr);
+            stream
+        } else {
+            establish_connection(&connection_mode, 3290).await?
+        };
+
+        // Handle the transfer
+        match handle_single_transfer(&mut stream, &files, &base_path, is_folder, file_path, &key)
+            .await
+        {
+            Ok(_) => {
+                println!("\n===========================================");
+                println!("Transfer complete!");
+                println!("===========================================");
+            }
+            Err(e) => {
+                eprintln!("\nTransfer error: {}", e);
+                if !persistent {
+                    return Err(e);
+                }
+                // In persistent mode, continue to next connection
+                eprintln!("Waiting for next connection...");
+            }
+        }
+
+        let _ = stream.shutdown().await;
+
+        // If not persistent, break after one transfer
+        if !persistent {
+            break;
+        }
+
+        println!("\nWaiting for next connection...");
+    }
+
+    Ok(())
+}
+
+async fn handle_single_transfer(
+    stream: &mut TcpStream,
+    files: &[PathBuf],
+    base_path: &PathBuf,
+    is_folder: bool,
+    file_path: &PathBuf,
+    key: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    version_handshake(stream, false).await?;
+
+    // Mode confirmation (1 = send, 0 = receive)
+    let peer_mode = stream.read_u64().await?;
+    if peer_mode == 1 {
+        stream.write_u64(0).await?;
+        return Err("Both ends selected send mode".into());
+    } else {
+        stream.write_u64(1).await?;
+    }
+
     // Send number of files
     stream.write_u64(files.len() as u64).await?;
 
     // Send folder info: 1 if sending a folder, 0 if single file
-    let is_folder = file_path.is_dir();
     stream.write_u64(if is_folder { 1 } else { 0 }).await?;
 
     // If sending a folder, send the folder name
@@ -285,32 +392,16 @@ async fn run_sender(
         stream.write_all(folder_name.as_bytes()).await?;
     }
 
-    // Send the base path for relative path calculation
-    let base_path = if file_path.is_dir() {
-        file_path.clone()
-    } else {
-        file_path
-            .parent()
-            .unwrap_or(std::path::Path::new(""))
-            .to_path_buf()
-    };
-
-    // Send each file sequentially (but with optimized protocol)
-    // For single file transfer, check for duplicates; for multiple files, stream without checking
+    // Send each file sequentially
     let check_duplicate = files.len() == 1;
 
     for (i, file) in files.iter().enumerate() {
         println!("\n===========================================");
         println!("File {} of {}", i + 1, files.len());
         println!("===========================================");
-        send::send_file(file, &base_path, &key, &mut stream, check_duplicate).await?;
+        send::send_file(file, base_path, key, stream, check_duplicate).await?;
     }
 
-    println!("\n===========================================");
-    println!("Transfer complete!");
-    println!("===========================================");
-
-    stream.shutdown().await?;
     Ok(())
 }
 
