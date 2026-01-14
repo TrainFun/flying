@@ -53,27 +53,25 @@ pub fn discover_services(
     while start_time.elapsed().as_secs() < timeout_secs {
         use mdns_sd::ServiceEvent;
 
-        // Check for new events
         while let Ok(event) = receiver.try_recv() {
             match event {
                 ServiceEvent::ServiceResolved(info) => {
-                    // Get addresses and convert from ScopedIp to IpAddr
                     for scoped_ip in info.get_addresses() {
                         let ip_addr = match scoped_ip {
                             mdns_sd::ScopedIp::V4(scoped_v4) => IpAddr::V4(*scoped_v4.addr()),
-                            mdns_sd::ScopedIp::V6(scoped_v6) => {
-                                let addr = *scoped_v6.addr();
-                                // Skip link-local IPv6 addresses without proper scope
-                                if addr.is_loopback()
-                                    || addr.is_unspecified()
-                                    || addr.is_unicast_link_local()
-                                {
-                                    continue;
-                                }
-                                IpAddr::V6(addr)
-                            }
-                            _ => continue, // Skip any other address types
+                            mdns_sd::ScopedIp::V6(v6) => IpAddr::V6(*v6.addr()),
+                            _ => continue,
                         };
+                        if ip_addr.is_loopback() || ip_addr.is_unspecified() {
+                            continue;
+                        }
+                        let is_link_local = match ip_addr {
+                            IpAddr::V4(v4) => v4.is_link_local(),
+                            IpAddr::V6(v6) => v6.is_unicast_link_local(),
+                        };
+                        if is_link_local {
+                            continue;
+                        }
 
                         // Check if we already have this service
                         let already_exists = services.iter().any(|s: &DiscoveredService| {
