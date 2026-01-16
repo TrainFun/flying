@@ -89,3 +89,50 @@ pub async fn version_handshake(
 
     Ok(())
 }
+
+pub async fn mode_shake(
+    stream: &mut TcpStream,
+    send_first: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Mode: 1 = send, 0 = receive
+    let our_mode = if send_first { 0 } else { 1 };
+
+    if send_first {
+        // Receiver sends first, then reads peer's response
+        stream.write_u64(our_mode).await?;
+        let peer_response = stream.read_u64().await?;
+        if peer_response != 1 {
+            return Err("Both ends selected the same mode".into());
+        }
+    } else {
+        // Sender reads peer's mode first, then responds
+        let peer_mode = stream.read_u64().await?;
+        if peer_mode == 1 {
+            stream.write_u64(0).await?;
+            return Err("Both ends selected send mode".into());
+        } else {
+            stream.write_u64(1).await?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn create_listener(port: u16) -> Result<tokio::net::TcpListener, Box<dyn std::error::Error>> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::SocketAddr;
+
+    let addr = format!("[::]:{}", port).parse::<SocketAddr>()?;
+
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_only_v6(false)?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(128)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    std_listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(std_listener)?;
+
+    Ok(listener)
+}

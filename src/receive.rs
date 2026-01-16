@@ -12,6 +12,29 @@ use tokio::{
     net::TcpStream,
 };
 
+pub async fn receiver_handshake(
+    stream: &mut tokio::net::TcpStream,
+    version: u64,
+) -> Result<(u64, bool, Option<String>), Box<dyn std::error::Error>> {
+    utils::version_handshake(stream, true, version).await?;
+    utils::mode_shake(stream, true).await?;
+
+    // Receive metadata
+    let num_files = stream.read_u64().await?;
+    let is_folder = stream.read_u64().await? == 1;
+
+    let folder_name = if is_folder {
+        let folder_name_len = stream.read_u64().await? as usize;
+        let mut folder_name_bytes = vec![0; folder_name_len];
+        stream.read_exact(&mut folder_name_bytes).await?;
+        Some(String::from_utf8_lossy(&folder_name_bytes).to_string())
+    } else {
+        None
+    };
+
+    Ok((num_files, is_folder, folder_name))
+}
+
 async fn receive_file_details(
     stream: &mut TcpStream,
 ) -> Result<(String, u64), Box<dyn std::error::Error>> {

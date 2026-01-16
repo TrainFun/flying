@@ -125,7 +125,7 @@ async fn send_file_from_uri(
                 .map_err(|e| format!("Failed to open file: {}", e))?;
 
             // Use the new run_sender_from_file function directly (no temp file needed!)
-            flying::run_sender_from_file(source_file, &file_name, &password, mode, false)
+            flying::run_sender_from_handle(source_file, &file_name, &password, mode)
                 .await
                 .map_err(|e| format!("Send error: {}", e))?;
 

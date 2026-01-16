@@ -14,6 +14,28 @@ use tokio::{
 
 const CHUNKSIZE: usize = 1_000_000; // 1 MB
 
+pub async fn sender_handshake(
+    stream: &mut tokio::net::TcpStream,
+    version: u64,
+    num_files: u64,
+    is_folder: bool,
+    folder_name: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    utils::version_handshake(stream, false, version).await?;
+    utils::mode_shake(stream, false).await?;
+
+    stream.write_u64(num_files).await?;
+    stream.write_u64(if is_folder { 1 } else { 0 }).await?;
+
+    if is_folder {
+        let folder_name = folder_name.ok_or("Folder name required when is_folder is true")?;
+        stream.write_u64(folder_name.len() as u64).await?;
+        stream.write_all(folder_name.as_bytes()).await?;
+    }
+
+    Ok(())
+}
+
 async fn send_file_details(
     stream: &mut TcpStream,
     filename: &str,
@@ -83,15 +105,53 @@ async fn send_file_streaming(
     Ok(())
 }
 
-pub async fn send_file(
+pub async fn send_file_from_handle(
+    stream: &mut TcpStream,
+    file: File,
+    filename: &str,
+    size: u64,
+    key: &[u8],
+    check_duplicate: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    let cipher = Aes256Gcm::new_from_slice(key)?;
+
+    println!("Sending file: {}", filename);
+    println!("File size: {}", format_size(size, BINARY));
+
+    send_file_details(stream, filename, size).await?;
+
+    if check_duplicate {
+        let need_transfer = check_for_file(stream, &file).await?;
+        if !need_transfer {
+            println!("Recipient already has this file, skipping.");
+            return Ok(());
+        }
+    }
+
+    // Stream file data
+    send_file_streaming(stream, file, size, &cipher).await?;
+
+    let elapsed = Instant::now() - start;
+    println!(
+        "Sending took {}",
+        humantime::format_duration(Duration::from_secs_f64(elapsed.as_secs_f64()))
+    );
+
+    let megabits = 8.0 * (size as f64 / 1_000_000.0);
+    let mbps = megabits / elapsed.as_secs_f64();
+    println!("Speed: {:.2}mbps", mbps);
+
+    Ok(())
+}
+
+pub async fn send_file_from_path(
     stream: &mut TcpStream,
     file_path: &Path,
     base_path: &Path,
     key: &[u8],
     check_duplicate: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let start = Instant::now();
-    let cipher = Aes256Gcm::new_from_slice(key)?;
     let metadata = metadata(file_path)?;
     let size = metadata.len();
 
@@ -106,33 +166,6 @@ pub async fn send_file(
             .to_string()
     };
 
-    println!("Sending file: {}", filename);
-    println!("File size: {}", format_size(size, BINARY));
-
-    send_file_details(stream, &filename, size).await?;
-
-    if check_duplicate {
-        let file = File::open(file_path)?;
-        let need_transfer = check_for_file(stream, &file).await?;
-        if !need_transfer {
-            println!("Recipient already has this file, skipping.");
-            return Ok(());
-        }
-    }
-
-    // Stream file data immediately without waiting for confirmation
     let file = File::open(file_path)?;
-    send_file_streaming(stream, file, size, &cipher).await?;
-
-    let elapsed = Instant::now() - start;
-    println!(
-        "Sending took {}",
-        humantime::format_duration(Duration::from_secs_f64(elapsed.as_secs_f64()))
-    );
-
-    let megabits = 8.0 * (size as f64 / 1_000_000.0);
-    let mbps = megabits / elapsed.as_secs_f64();
-    println!("Speed: {:.2}mbps", mbps);
-
-    Ok(())
+    send_file_from_handle(stream, file, &filename, size, key, check_duplicate).await
 }
