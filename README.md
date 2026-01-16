@@ -13,17 +13,19 @@ Fast, secure, encrypted file transfer tool with automatic peer discovery.
 
 ## Installation
 
-### Option 1: cargo-binstall
+### Desktop (Linux, macOS, Windows)
+
+#### Option 1: cargo-binstall
 
 ```bash
 cargo binstall flying --git https://github.com/wpcRaskolnikov/flying
 ```
 
-### Option 2: Download from Releases
+#### Option 2: Download from Releases
 
 Download the latest binary for your platform from [releases page](https://github.com/wpcRaskolnikov/flying/releases).
 
-### Option 3: Build from Source
+#### Option 3: Build from Source
 
 ```bash
 cargo build --release
@@ -31,79 +33,67 @@ cargo build --release
 
 Binary: `target/release/flying`
 
+### Android
+
+Download the Flying Android app from the [releases page](https://github.com/wpcRaskolnikov/flying/releases).
+
 ## Quick Start
 
 **Either side must use -l to listen first, the other side will connect**
 
 ```bash
-# Option 1: Sender listens (generates password)
+# Sender listens (generates password)
 # Computer A:
 flying send -l myfile.pdf
 # Computer B:
 flying receive the-generated-password
-
-# Option 2: Receiver listens
-# Computer A:
-flying receive -l
-# Computer B:
-flying send myfile.pdf the-generated-password
 ```
 
+## Command Line Options
 
-## Usage
-
-### Send Files
+### Send Command
 ```bash
-# Listen mode (generates password)
-flying send -l <file>
-
-# Connect to IP
-flying send -c <IP> <file> <password>
-
-# Send folder
-flying send -lr <folder>
+flying send [OPTIONS] <file> [password]
 ```
 
-### Receive Files
-```bash
-# Auto-discover sender
-flying receive <password>
-
-# Listen mode
-flying receive -l <password>
-
-# Connect to IP
-flying receive -c <IP> <password>
-
-# Custom output directory
-flying receive -o ~/Downloads <password>
-```
-
-## Options
-
-### Send
-- `-r, --recursive` - Send folders
+Options:
 - `-l, --listen` - Listen for connections (generates password)
 - `-c, --connect <IP>` - Connect to specific IP
+- `-r, --recursive` - Send folders
+- `-P, --persistent` - Keep listening after transfer completes (requires -l)
 
-### Receive
+Examples:
+```bash
+# Listen mode
+flying send -l document.pdf
+
+# Send folder
+flying send -lr my-project
+
+# Persistent mode (multiple transfers)
+flying send -lP video.mp4
+```
+
+### Receive Command
+```bash
+flying receive [OPTIONS] [password]
+```
+
+Options:
 - `-l, --listen` - Listen for connections
 - `-c, --connect <IP>` - Connect to specific IP
 - `-o, --output <DIR>` - Output directory (default: current directory)
 
-## Examples
+Examples:
 ```bash
-# Transfer a file (A listens, B connects)
-A: flying send -l document.pdf
-B: flying receive the-password-from-A
+# Auto-discover sender
+flying receive the-password
 
-# Transfer a folder
-A: flying send -lr my-project
-B: flying receive -o ~/Projects the-password
+# Listen mode
+flying receive -l
 
-# Direct IP connection
-A: flying send -l video.mp4
-B: flying receive -c 192.168.1.100 the-password
+# Custom output directory
+flying receive -o ~/Downloads the-password
 ```
 
 ## Contributing
