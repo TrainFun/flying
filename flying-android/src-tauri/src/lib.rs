@@ -101,46 +101,48 @@ async fn send_file_from_uri(
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip);
 
-    tokio::spawn(async move {
-        let _ = window.emit("send-start", serde_json::json!({}));
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create local runtime");
 
-        let result: Result<(), String> = async {
-            // Get Android FS API
-            let api = app.android_fs_async();
+        rt.block_on(async {
+            let _ = window.emit("send-start", serde_json::json!({}));
 
-            // Deserialize the URI JSON string back to FileUri
-            let uri: FileUri = serde_json::from_str(&file_uri)
-                .map_err(|e| format!("Failed to parse URI: {}", e))?;
+            let result: Result<(), String> = async {
+                let api = app.android_fs_async();
 
-            // Get file metadata
-            let file_name = api
-                .get_name(&uri)
-                .await
-                .map_err(|e| format!("Failed to get file name: {}", e))?;
+                let uri: FileUri = serde_json::from_str(&file_uri)
+                    .map_err(|e| format!("Failed to parse URI: {}", e))?;
 
-            // Open file for reading
-            let source_file = api
-                .open_file_readable(&uri)
-                .await
-                .map_err(|e| format!("Failed to open file: {}", e))?;
+                let file_name = api
+                    .get_name(&uri)
+                    .await
+                    .map_err(|e| format!("Failed to get file name: {}", e))?;
 
-            // Use the new run_sender_from_file function directly (no temp file needed!)
-            flying::run_sender_from_handle(source_file, &file_name, &password, mode)
-                .await
-                .map_err(|e| format!("Send error: {}", e))?;
+                let source_file = api
+                    .open_file_readable(&uri)
+                    .await
+                    .map_err(|e| format!("Failed to open file: {}", e))?;
 
-            Ok(())
-        }
-        .await;
+                flying::run_sender_from_handle(source_file, &file_name, &password, mode)
+                    .await
+                    .map_err(|e| format!("Send error: {}", e))?;
 
-        match result {
-            Ok(_) => {
-                let _ = window.emit("send-complete", serde_json::json!({}));
+                Ok(())
             }
-            Err(e) => {
-                let _ = window.emit("send-error", e);
+            .await;
+
+            match result {
+                Ok(_) => {
+                    let _ = window.emit("send-complete", serde_json::json!({}));
+                }
+                Err(e) => {
+                    let _ = window.emit("send-error", e);
+                }
             }
-        }
+        });
     });
 
     Ok(())
