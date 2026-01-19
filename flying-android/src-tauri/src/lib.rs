@@ -242,12 +242,6 @@ async fn receive_file(
             let output_uri = FileUri::from_json_str(&output_dir_uri)
                 .map_err(|e| format!("Failed to parse output directory URI: {}", e))?;
 
-            // Persist access permission
-            api.file_picker()
-                .persist_uri_permission(&output_uri)
-                .await
-                .map_err(|e| format!("Failed to persist directory permission: {}", e))?;
-
             // For Android, we need to adapt the receiver to write to Android content URI
             // This is a temporary solution that uses the default path
             // TODO: Implement proper Android content URI writing in flying crate
