@@ -17,7 +17,7 @@ pub fn advertise_service(port: u16) -> Result<ServiceDaemon, Box<dyn std::error:
     let instance_name = format!("{}-{}", hostname, SERVICE_NAME);
     let service_hostname = format!("{}.local.", hostname);
 
-    let properties = [("version", "4")];
+    let properties = [("version", "5")];
     let service_info = ServiceInfo::new(
         SERVICE_TYPE,
         &instance_name,
@@ -97,8 +97,8 @@ pub fn discover_services(
                     });
                 }
             }
-            Ok(_) => {}
-            Err(_) => {}
+            Ok() => {}
+            Err() => {}
         }
     }
 

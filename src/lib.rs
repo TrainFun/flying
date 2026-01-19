@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub const VERSION: u64 = 5;
+const DEFAULT_PORT: u16 = 3290;
 
 #[derive(Debug, Clone)]
 pub enum ConnectionMode {
@@ -67,7 +68,6 @@ fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::Discove
 
 async fn establish_connection(
     mode: &ConnectionMode,
-    port: u16,
 ) -> Result<TcpStream, Box<dyn std::error::Error>> {
     match mode {
         ConnectionMode::AutoDiscover => {
@@ -85,10 +85,10 @@ async fn establish_connection(
             }
         }
         ConnectionMode::Listen => {
-            let listener = utils::create_listener(port)?;
-            let _mdns = mdns::advertise_service(port)?;
+            let listener = utils::create_listener(DEFAULT_PORT)?;
+            let _mdns = mdns::advertise_service(DEFAULT_PORT)?;
 
-            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
+            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", DEFAULT_PORT);
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
@@ -96,7 +96,7 @@ async fn establish_connection(
         }
         ConnectionMode::Connect(ip) => {
             let ip: std::net::IpAddr = ip.parse()?;
-            let addr = std::net::SocketAddr::new(ip, port);
+            let addr = std::net::SocketAddr::new(ip, DEFAULT_PORT);
             println!("Connecting to {}...", addr);
             let stream = TcpStream::connect(addr).await?;
             println!("Connected!\n");
@@ -110,32 +110,26 @@ pub async fn run_receiver(
     password: &str,
     connection_mode: ConnectionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = establish_connection(&connection_mode, 3290).await?;
+    let mut stream = establish_connection(&connection_mode).await?;
 
-    // Perform handshake and receive metadata
     let (key, num_files, is_folder, folder_name) =
-        receive::receiver_handshake(&mut stream, VERSION, password).await?;
+        utils::receive_handshake(&mut stream, VERSION, password).await?;
 
     println!("Receiving {} file(s)...\n", num_files);
 
-    // Determine output directory
     let final_output_dir = if is_folder {
         let folder_name = folder_name.ok_or("Folder name missing")?;
-
         let mut folder_path = output_dir.clone();
         folder_path.push(&folder_name);
         println!("Creating folder: {}\n", folder_name);
-
         if !folder_path.exists() {
             std::fs::create_dir_all(&folder_path)?;
         }
-
         folder_path
     } else {
         output_dir.clone()
     };
 
-    // Only check duplicate for single file transfer
     let check_duplicate = num_files == 1;
 
     for i in 0..num_files {
@@ -154,7 +148,7 @@ pub async fn run_receiver(
     Ok(())
 }
 
-fn collect_files_recursive(
+fn collect_files(
     dir: &std::path::Path,
     files: &mut Vec<std::path::PathBuf>,
 ) -> std::io::Result<()> {
@@ -167,7 +161,7 @@ fn collect_files_recursive(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files_recursive(&path, files)?;
+            collect_files(&path, files)?;
         } else {
             files.push(path);
         }
@@ -182,11 +176,7 @@ pub async fn run_sender(
     persistent: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut files = Vec::new();
-    if file_path.is_dir() {
-        collect_files_recursive(file_path, &mut files)?;
-    } else {
-        files.push(file_path.clone());
-    }
+    collect_files(file_path, &mut files)?;
 
     if files.is_empty() {
         return Err("No files to send".into());
@@ -212,10 +202,9 @@ pub async fn run_sender(
         String::new()
     };
 
-    // If persistent mode, we need to keep a listener alive
     let listener = if persistent && matches!(connection_mode, ConnectionMode::Listen) {
-        let l = utils::create_listener(3290)?;
-        mdns::advertise_service(3290)?;
+        let l = utils::create_listener(DEFAULT_PORT)?;
+        mdns::advertise_service(DEFAULT_PORT)?;
         Some(l)
     } else {
         None
@@ -232,47 +221,41 @@ pub async fn run_sender(
         }
 
         let mut stream = if let Some(ref listener) = listener {
-            println!(
-                "Listening on {} (IPv4/IPv6 dual-stack)...",
-                format!("[::]:{}", 3290)
-            );
+            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", DEFAULT_PORT);
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
             stream
         } else {
-            establish_connection(&connection_mode, 3290).await?
+            establish_connection(&connection_mode).await?
         };
 
-        // Handle the transfer
-        let transfer_result = (async {
-            let folder_name_str = if is_folder {
+        let transfer_result = async {
+            let folder_name_opt = if is_folder {
                 Some(folder_name.as_str())
             } else {
                 None
             };
 
-            let key = send::sender_handshake(
+            let key = utils::send_handshake(
                 &mut stream,
                 VERSION,
                 password,
                 files.len() as u64,
                 is_folder,
-                folder_name_str,
+                folder_name_opt,
             )
             .await?;
 
             let check_duplicate = files.len() == 1;
-            for (i, file) in files.iter().enumerate() {
                 println!("\n===========================================");
                 println!("File {} of {}", i + 1, files.len());
                 println!("===========================================");
-                send::send_file_from_path(&mut stream, file, &base_path, &key, check_duplicate)
-                    .await?;
+                send::send_from_path(&mut stream, file, &base_path, &key, check_duplicate).await?;
             }
 
             Ok::<(), Box<dyn std::error::Error>>(())
-        })
+        }
         .await;
 
         match transfer_result {
@@ -285,9 +268,8 @@ pub async fn run_sender(
                 eprintln!("\nTransfer error: {}", e);
                 if !persistent {
                     return Err(e);
-                } else {
-                    eprintln!("Waiting for next connection...");
                 }
+                eprintln!("Waiting for next connection...");
             }
         }
 
@@ -295,9 +277,8 @@ pub async fn run_sender(
 
         if !persistent {
             break;
-        } else {
-            println!("\nWaiting for next connection...");
         }
+        println!("\nWaiting for next connection...");
     }
 
     Ok(())
@@ -310,20 +291,18 @@ pub async fn run_sender_from_handle(
     connection_mode: ConnectionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let size = file.metadata()?.len();
+    let mut stream = establish_connection(&connection_mode).await?;
 
-    let mut stream = establish_connection(&connection_mode, 3290).await?;
-
-    let transfer_result = (async {
-        let key = send::sender_handshake(&mut stream, VERSION, password, 1, false, None).await?;
+    let transfer_result = async {
+        let key = utils::send_handshake(&mut stream, VERSION, password, 1, false, None).await?;
 
         println!("\n===========================================");
         println!("File 1 of 1");
         println!("===========================================");
-
-        send::send_file_from_handle(&mut stream, file, filename, size, &key, true).await?;
+        send::send_file(&mut stream, file, filename, size, &key, true).await?;
 
         Ok::<(), Box<dyn std::error::Error>>(())
-    })
+    }
     .await;
 
     match transfer_result {
