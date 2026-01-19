@@ -88,7 +88,10 @@ async fn establish_connection(
             let listener = utils::create_listener(DEFAULT_PORT)?;
             let _mdns = mdns::advertise_service(DEFAULT_PORT)?;
 
-            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", DEFAULT_PORT);
+            println!(
+                "Listening on [::]:{} (IPv4/IPv6 dual-stack)...",
+                DEFAULT_PORT
+            );
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
@@ -221,7 +224,10 @@ pub async fn run_sender(
         }
 
         let mut stream = if let Some(ref listener) = listener {
-            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", DEFAULT_PORT);
+            println!(
+                "Listening on [::]:{} (IPv4/IPv6 dual-stack)...",
+                DEFAULT_PORT
+            );
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
@@ -248,6 +254,7 @@ pub async fn run_sender(
             .await?;
 
             let check_duplicate = files.len() == 1;
+            for (i, file) in files.iter().enumerate() {
                 println!("\n===========================================");
                 println!("File {} of {}", i + 1, files.len());
                 println!("===========================================");

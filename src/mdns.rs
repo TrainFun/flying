@@ -97,8 +97,8 @@ pub fn discover_services(
                     });
                 }
             }
-            Ok() => {}
-            Err() => {}
+            Ok(_) => {}
+            Err(_) => {}
         }
     }
 

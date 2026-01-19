@@ -167,17 +167,17 @@ pub async fn pake_handshake(
     let aead_info: &[&[u8]] = &[b"aead-key"];
     let mut aead_key = [0u8; 32];
     prk.expand(aead_info, MyKeyType(32))
-        .map_err(|| "HKDF expand failed")?
+        .map_err(|_| "HKDF expand failed")?
         .fill(&mut aead_key)
-        .map_err(|| "HKDF key derivation failed")?;
+        .map_err(|_| "HKDF key derivation failed")?;
 
     // Key confirmation using HMAC
     let hmac_info: &[&[u8]] = &[b"hmac-key"];
     let mut hmac_key_bytes = [0u8; 32];
     prk.expand(hmac_info, MyKeyType(32))
-        .map_err(|| "HKDF expand failed")?
+        .map_err(|_| "HKDF expand failed")?
         .fill(&mut hmac_key_bytes)
-        .map_err(|| "HKDF key derivation failed")?;
+        .map_err(|_| "HKDF key derivation failed")?;
 
     let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, &hmac_key_bytes);
 
