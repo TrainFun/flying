@@ -6,7 +6,7 @@ pub mod utils;
 use std::net::SocketAddr;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-pub const VERSION: u64 = 4;
+pub const VERSION: u64 = 5;
 
 #[derive(Debug, Clone)]
 pub enum ConnectionMode {

@@ -8,7 +8,6 @@ import {
   FormControl,
   InputLabel,
   Typography,
-  Alert,
   LinearProgress,
   Snackbar,
   Alert as SnackbarAlert,
@@ -16,8 +15,8 @@ import {
 } from "@mui/material";
 import {
   Download as DownloadIcon,
-  Info as InfoIcon,
   ContentCopy as CopyIcon,
+  Folder as FolderIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -28,10 +27,12 @@ type ConnectionMode = "listen" | "connect";
 function ReceivePage() {
   const [password, setPassword] = useState("");
   const [connectionMode, setConnectionMode] =
-    useState<ConnectionMode>("listen");
+    useState<ConnectionMode>("connect");
   const [connectIp, setConnectIp] = useState("");
   const [isReceiving, setIsReceiving] = useState(false);
   const [status, setStatus] = useState("");
+  const [outputDirUri, setOutputDirUri] = useState<string | null>(null);
+  const [outputDirName, setOutputDirName] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: "",
@@ -79,7 +80,39 @@ function ReceivePage() {
     }
   };
 
+  const handlePickFolder = async () => {
+    try {
+      const result = await invoke<[string, string] | null>("pick_folder");
+      if (result) {
+        const [uri, name] = result;
+        setOutputDirUri(uri);
+        setOutputDirName(name);
+        setSnackbar({
+          open: true,
+          message: `Output folder set to: ${name}`,
+          severity: "success",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to pick folder:", error);
+      setSnackbar({
+        open: true,
+        message: `Failed to pick folder: ${error}`,
+        severity: "error",
+      });
+    }
+  };
+
   const handleReceive = async () => {
+    if (!outputDirUri) {
+      setSnackbar({
+        open: true,
+        message: "Please select an output folder first",
+        severity: "error",
+      });
+      return;
+    }
+
     if (connectionMode === "connect" && !connectIp.trim()) {
       setSnackbar({
         open: true,
@@ -117,6 +150,7 @@ function ReceivePage() {
         password: receivePassword,
         connectionMode,
         connectIp: connectIp.trim() || null,
+        outputDirUri: outputDirUri,
       });
     } catch (error) {
       console.error("Failed to receive file:", error);
@@ -130,9 +164,36 @@ function ReceivePage() {
 
   return (
     <Box sx={{ p: 2, pt: 3 }}>
-      <Alert severity="info" icon={<InfoIcon />} sx={{ mb: 3 }}>
-        Files will be saved to the Download directory
-      </Alert>
+      <SnackbarAlert severity="info" sx={{ mb: 3 }}>
+        Android: Files will be saved to Download folder, please select any
+        folder below to continue
+      </SnackbarAlert>
+
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="body2" color="text.secondary" gutterBottom>
+          Output Folder
+        </Typography>
+        <Box sx={{ display: "flex", gap: 1 }}>
+          <TextField
+            fullWidth
+            placeholder="Select output folder"
+            value={outputDirName || ""}
+            slotProps={{ input: { readOnly: true } }}
+            disabled={isReceiving}
+            size="small"
+          />
+          <Button
+            variant="contained"
+            startIcon={<FolderIcon />}
+            onClick={handlePickFolder}
+            disabled={isReceiving}
+            size="small"
+            sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+          >
+            SELECT
+          </Button>
+        </Box>
+      </Box>
 
       <Box sx={{ mb: 3 }}>
         <Typography variant="body2" color="text.secondary" gutterBottom>

@@ -208,20 +208,75 @@ async fn send_file_from_uri(
 }
 
 #[tauri::command]
+#[cfg(target_os = "android")]
 async fn receive_file(
     password: String,
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
+    output_dir_uri: String,
+    app: tauri::AppHandle,
     window: tauri::Window,
 ) -> Result<(), String> {
-    let download_dir = PathBuf::from("/storage/emulated/0/Download");
-
     let mode = connection_mode.to_flying_mode(connect_ip);
 
     tokio::spawn(async move {
         let _ = window.emit("receive-start", serde_json::json!({}));
 
-        let result = flying::run_receiver(&download_dir, &password, mode).await;
+        let result: Result<(), String> = async {
+            use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
+
+            let api = app.android_fs_async();
+
+            // Parse output directory URI
+            let output_uri = FileUri::from_json_str(&output_dir_uri)
+                .map_err(|e| format!("Failed to parse output directory URI: {}", e))?;
+
+            // Persist access permission
+            api.take_persistable_uri_permission(&output_uri)
+                .await
+                .map_err(|e| format!("Failed to persist directory permission: {}", e))?;
+
+            // For Android, we need to adapt the receiver to write to Android content URI
+            // This is a temporary solution that uses the default path
+            // TODO: Implement proper Android content URI writing in flying crate
+            let download_dir = PathBuf::from("/storage/emulated/0/Download");
+            flying::run_receiver(&download_dir, &password, mode)
+                .await
+                .map_err(|e| format!("Receive error: {}", e))?;
+
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(_) => {
+                let _ = window.emit("receive-complete", serde_json::json!({}));
+            }
+            Err(e) => {
+                let _ = window.emit("receive-error", e);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "android"))]
+async fn receive_file(
+    password: String,
+    connection_mode: ConnectionMode,
+    connect_ip: Option<String>,
+    output_dir_uri: String,
+    window: tauri::Window,
+) -> Result<(), String> {
+    let output_dir = PathBuf::from(output_dir_uri);
+    let mode = connection_mode.to_flying_mode(connect_ip);
+
+    tokio::spawn(async move {
+        let _ = window.emit("receive-start", serde_json::json!({}));
+
+        let result = flying::run_receiver(&output_dir, &password, mode).await;
 
         match result {
             Ok(_) => {

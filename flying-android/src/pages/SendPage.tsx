@@ -17,6 +17,7 @@ import {
   InsertDriveFile as FileIcon,
   Send as SendIcon,
   ContentCopy as CopyIcon,
+  Folder as FolderIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -29,7 +30,7 @@ function SendPage() {
   const [selectedFileName, setSelectedFileName] = useState<string>("");
   const [password, setPassword] = useState("");
   const [connectionMode, setConnectionMode] =
-    useState<ConnectionMode>("listen");
+    useState<ConnectionMode>("connect");
   const [connectIp, setConnectIp] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [status, setStatus] = useState("");
@@ -83,6 +84,25 @@ function SendPage() {
       setSnackbar({
         open: true,
         message: "Failed to select file",
+        severity: "error",
+      });
+    }
+  };
+
+  const handleFolderSelect = async () => {
+    try {
+      const result = await invoke<[string, string] | null>("pick_folder");
+
+      if (result) {
+        const [uri, foldername] = result;
+        setSelectedFile(uri);
+        setSelectedFileName(foldername);
+      }
+    } catch (error) {
+      console.error("Failed to select folder:", error);
+      setSnackbar({
+        open: true,
+        message: "Failed to select folder",
         severity: "error",
       });
     }
@@ -161,14 +181,18 @@ function SendPage() {
 
   return (
     <Box sx={{ p: 2, pt: 3 }}>
+      <Alert severity="warning" sx={{ mb: 3 }}>
+        Android: Sending folders is not supported yet, please select files only
+      </Alert>
+
       <Box sx={{ mb: 3 }}>
         <Typography variant="body2" color="text.secondary" gutterBottom>
-          File to Send
+          File or Folder to Send
         </Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
-            placeholder="Select file"
+            placeholder="Select file or folder"
             value={selectedFileName}
             slotProps={{ input: { readOnly: true } }}
             disabled={isSending}
@@ -182,7 +206,17 @@ function SendPage() {
             size="small"
             sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
           >
-            SELECT
+            FILE
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<FolderIcon />}
+            onClick={handleFolderSelect}
+            disabled={isSending}
+            size="small"
+            sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+          >
+            FOLDER
           </Button>
         </Box>
       </Box>
